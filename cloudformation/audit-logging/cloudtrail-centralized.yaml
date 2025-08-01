@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'SOC 2: Deploys a secure, multi-region CloudTrail for centralized audit logging. (CC7.2, CC7.3)'
+
+Parameters:
+  LogRetentionInDays:
+    Type: Number
+    Default: 365
+    Description: 'Number of days to retain logs in the S3 bucket.'
+
+Resources:
+  AuditLogBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: 'LogDeliveryWrite'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: 'LogRetentionRule'
+            Status: 'Enabled'
+            ExpirationInDays: !Ref LogRetentionInDays
+
+  AuditLogBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref AuditLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'AWSCloudTrailAclCheck'
+            Effect: 'Allow'
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Action: 's3:GetBucketAcl'
+            Resource: !GetAtt AuditLogBucket.Arn
+          - Sid: 'AWSCloudTrailWrite'
+            Effect: 'Allow'
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Action: 's3:PutObject'
+            Resource: !Sub '${AuditLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': 'bucket-owner-full-control'
+
+  CentralAuditTrail:
+    Type: 'AWS::CloudTrail::Trail'
+    Properties:
+      S3BucketName: !Ref AuditLogBucket
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailLogRole.Arn
+
+  CloudTrailLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: '/aws/cloudtrail/central-audit-trail'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  CloudTrailLogRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'CloudTrailLogDeliveryPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt CloudTrailLogGroup.Arn
+
+Outputs:
+  TrailArn:
+    Value: !GetAtt CentralAuditTrail.Arn
+  AuditBucketName:
+    Value: !Ref AuditLogBucket
